@@ -212,6 +212,8 @@ async function clientIdValue(force = false) {
 
 async function scrapeClientId() {
   const pages = [SITE + "/", SITE + "/discover"];
+  let reachedPage = false;
+  let lastError = null;
 
   for (const page of pages) {
     let html = "";
@@ -219,9 +221,11 @@ async function scrapeClientId() {
       const response = await request(page, {
         headers: { accept: "text/html" },
       });
+      reachedPage = true;
       if (response.status !== 200) continue;
       html = response.text;
-    } catch {
+    } catch (error) {
+      lastError = error;
       continue;
     }
 
@@ -238,12 +242,19 @@ async function scrapeClientId() {
           headers: { accept: "text/javascript" },
         });
         if (asset.status !== 200) continue;
-        const found = asset.text.match(/client_id\s*:\s*"([0-9a-zA-Z]{32})"/);
+        const found =
+          asset.text.match(/client_id\s*:\s*["']([0-9a-zA-Z]{32})["']/) ||
+          asset.text.match(/[?&]client_id=([0-9a-zA-Z]{32})\b/);
         if (found) return found[1];
-      } catch {
+      } catch (error) {
+        lastError = error;
         // Another asset may have it.
       }
     }
+  }
+
+  if (!reachedPage && lastError) {
+    throw new Error(t("Could not reach SoundCloud: check your network or proxy"));
   }
 
   throw new Error(t("Could not find SoundCloud's client id: try again later"));

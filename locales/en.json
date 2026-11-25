@@ -26,6 +26,7 @@
   "SoundCloud will not play this": "SoundCloud will not play this",
   "SoundCloud is rate limiting: try again later": "SoundCloud is rate limiting: try again later",
   "SoundCloud answered": "SoundCloud answered",
+  "Could not reach SoundCloud: check your network or proxy": "Could not reach SoundCloud: check your network or proxy",
   "Could not find SoundCloud's client id: try again later": "Could not find SoundCloud's client id: try again later",
   "Paste your oauth_token in the plugin settings, then sign in": "Paste your oauth_token in the plugin settings, then sign in",
   "SoundCloud rejected that oauth_token": "SoundCloud rejected that oauth_token",
