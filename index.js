@@ -26,6 +26,7 @@ const MOBI = "https://m.soundcloud.com";
 const LRCLIB = "https://lrclib.net";
 const MOBI_CLIENT_ID_FALLBACK = "KKzJxmw11tYpCs6T24P4uUYhqmjalG6M";
 const ANDROID_WEB_AUTH_APP_ID = "3152";
+const FOLLOW_SIGNATURE_SECRET_FALLBACK = "5Dpr3ubBw8LFtbvQcd4Hx6hU";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -39,6 +40,8 @@ const PAGE = 20;
 const CLIENT_ID_TTL = 24 * 60 * 60 * 1000;
 const TRACK_TTL = 5 * 60 * 1000;
 const MEDIA_TTL = 30 * 60 * 1000;
+const STATE_CACHE_TTL = 5 * 60 * 1000;
+const ID_SET_MAX_PAGES = 25;
 const HISTORY_MAX = 50;
 const TOKEN_REFRESH_MARGIN = 5 * 60 * 1000;
 const REFRESH_MIN_DELAY = 5 * 1000;
@@ -87,8 +90,8 @@ function requireToken() {
 const BASE64_CHARS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-// Pure-JS base64 encoder so state encoding works in runtimes without btoa.
-function encodeBase64(input) {
+// Pure-JS UTF-8 byte encoder so base64 and follow signing work without unescape/btoa.
+function utf8Bytes(input) {
   const bytes = [];
   const encoded = encodeURIComponent(String(input || ""));
   for (let i = 0; i < encoded.length; i++) {
@@ -99,6 +102,12 @@ function encodeBase64(input) {
       bytes.push(encoded.charCodeAt(i));
     }
   }
+  return bytes;
+}
+
+// Pure-JS base64 encoder so state encoding works in runtimes without btoa.
+function encodeBase64(input) {
+  const bytes = utf8Bytes(input);
   let out = "";
   for (let i = 0; i < bytes.length; i += 3) {
     const a = bytes[i];
@@ -113,6 +122,23 @@ function encodeBase64(input) {
     out += hasC ? BASE64_CHARS[n & 63] : "=";
   }
   return out;
+}
+
+// SoundCloud's POST /me/followings/:id endpoint requires a request signature
+// derived from the current user id, target user id, client_id, secret, and UA.
+function signFollow(userId, targetId, clientId, secret, userAgent = UA) {
+  const version = "1";
+  const parts = String(userAgent || "").split(/[ /]/);
+  const picked = parts.length ? parts[parts[0].length % parts.length] : "";
+  const raw = `${version}${secret}${clientId}${secret}${targetId}${userId}${picked}`;
+  const bytes = utf8Bytes(raw);
+  let hash = 7996111;
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash = (hash >> 1) + ((1 & hash) << 23);
+    hash += bytes[i];
+    hash &= 16777215;
+  }
+  return `${version}:${hash.toString(16)}`;
 }
 
 function randomBase64Url(length) {
@@ -284,8 +310,9 @@ function apiUrl(path, clientId, query) {
 }
 
 async function api(path, options = {}) {
-  const query = { ...(options.query || {}) };
+  const queryOption = options.query;
   const useAuth = options.auth !== false;
+  const method = String(options.method || "GET").toUpperCase();
   let forceClientId = false;
   let triedClientIdRefresh = false;
   let triedTokenRefresh = false;
@@ -298,16 +325,33 @@ async function api(path, options = {}) {
     const clientId = await clientIdValue(forceClientId);
     forceClientId = false;
 
+    const query =
+      typeof queryOption === "function"
+        ? queryOption(clientId) || {}
+        : { ...(queryOption || {}) };
+
     const usedToken = useAuth ? token() : "";
     const headers = {};
     if (usedToken) headers.Authorization = "OAuth " + usedToken;
-    if (options.body !== undefined)
+
+    let body;
+    if (options.form !== undefined) {
+      headers["content-type"] =
+        "application/x-www-form-urlencoded; charset=UTF-8";
+      const params = new URLSearchParams();
+      for (const key of Object.keys(options.form || {})) {
+        const value = options.form[key];
+        if (value === undefined || value === null) continue;
+        params.set(key, String(value));
+      }
+      body = params.toString();
+    } else if (options.body !== undefined) {
       headers["content-type"] = "application/json";
-    const body =
-      options.body === undefined ? undefined : JSON.stringify(options.body);
+      body = JSON.stringify(options.body);
+    }
 
     const response = await request(apiUrl(path, clientId, query), {
-      method: options.method || "GET",
+      method,
       headers,
       body,
     });
@@ -348,8 +392,12 @@ async function api(path, options = {}) {
 
     if (response.status === 404)
       throw fail("unavailable", t("SoundCloud has nothing at that address"));
-    if (response.status === 403)
+    if (response.status === 403) {
+      if (method !== "GET") {
+        throw new Error(t("SoundCloud did not allow this action"));
+      }
       throw fail("unavailable", t("SoundCloud will not play this"));
+    }
     if (response.status === 429)
       throw new Error(t("SoundCloud is rate limiting: try again later"));
 
@@ -372,6 +420,17 @@ async function api(path, options = {}) {
 
 let clientIdCache = "";
 let clientIdPromise = null;
+let followSecretCache = "";
+
+function followSecretValue() {
+  if (followSecretCache) return followSecretCache;
+  const stored = host.storage.get("followSecret");
+  if (stored) {
+    followSecretCache = String(stored);
+    return followSecretCache;
+  }
+  return FOLLOW_SIGNATURE_SECRET_FALLBACK;
+}
 
 async function clientIdValue(force = false) {
   if (!force && clientIdCache) return clientIdCache;
@@ -404,6 +463,7 @@ async function scrapeClientId() {
   const pages = [SITE + "/", SITE + "/discover"];
   let reachedPage = false;
   let lastError = null;
+  let foundClientId = "";
 
   for (const page of pages) {
     let html = "";
@@ -432,10 +492,20 @@ async function scrapeClientId() {
           headers: { accept: "text/javascript" },
         });
         if (asset.status !== 200) continue;
-        const found =
-          asset.text.match(/client_id\s*:\s*["']([0-9a-zA-Z]{32})["']/) ||
-          asset.text.match(/[?&]client_id=([0-9a-zA-Z]{32})\b/);
-        if (found) return found[1];
+        const secretMatch = asset.text.match(
+          /__FOLLOWS_SIGNATURE_SECRET__\s*=\s*["']([^"']+)["']/,
+        );
+        if (secretMatch && secretMatch[1]) {
+          followSecretCache = secretMatch[1];
+          host.storage.set("followSecret", secretMatch[1]);
+        }
+        if (!foundClientId) {
+          const found =
+            asset.text.match(/client_id\s*:\s*["']([0-9a-zA-Z]{32})["']/) ||
+            asset.text.match(/[?&]client_id=([0-9a-zA-Z]{32})\b/);
+          if (found) foundClientId = found[1];
+        }
+        if (foundClientId) return foundClientId;
       } catch (error) {
         lastError = error;
         // Another asset may have it.
@@ -458,6 +528,21 @@ let sessionGen = 0;
 let refreshPromise = null;
 let refreshTimer = null;
 let refreshRetryCount = 0;
+let likedTrackIdsCache = null;
+let likedTrackIdsPromise = null;
+let likedPlaylistIdsCache = null;
+let likedPlaylistIdsPromise = null;
+let followingIdsCache = null;
+let followingIdsPromise = null;
+
+function clearStateCaches() {
+  likedTrackIdsCache = null;
+  likedTrackIdsPromise = null;
+  likedPlaylistIdsCache = null;
+  likedPlaylistIdsPromise = null;
+  followingIdsCache = null;
+  followingIdsPromise = null;
+}
 
 function tokenExpiresAt() {
   const stored = Number(host.storage.get("tokenExpiresAt") || 0);
@@ -505,6 +590,7 @@ function clearSession() {
   host.storage.remove("refreshToken");
   host.storage.remove("tokenExpiresAt");
   meCache = null;
+  clearStateCaches();
 }
 
 function saveSession({ accessToken, refreshToken: nextRefresh, expiresIn }) {
@@ -783,6 +869,7 @@ export async function signIn() {
   const gen = ++sessionGen;
   clearRefreshTimer();
   meCache = null;
+  clearStateCaches();
 
   if (!access && !refresh) {
     if (typeof host.webSignIn !== "function") {
@@ -925,13 +1012,15 @@ function trackImage(track) {
   return image(track.artwork_url || (track.user && track.user.avatar_url));
 }
 
-function toArtist(user) {
+function toArtist(user, options = {}) {
   if (!user) return { id: "", name: "" };
-  return {
+  const result = {
     id: String(user.id !== undefined ? user.id : user.user_id || ""),
     name: user.username || user.full_name || "",
     imageUrl: image(user.avatar_url),
   };
+  if (options.following !== undefined) result.following = !!options.following;
+  return result;
 }
 
 // A track is playable when SoundCloud offers a stream the app can use: plain
@@ -989,8 +1078,8 @@ function toTrack(track, context) {
   };
 }
 
-function toAlbum(playlist) {
-  return {
+function toAlbum(playlist, options = {}) {
+  const result = {
     id: String(playlist.id),
     name: playlist.title || "",
     imageUrl: image(
@@ -999,6 +1088,86 @@ function toAlbum(playlist) {
     artists: [toArtist(playlist.user)],
     released: String(
       playlist.release_date || playlist.display_date || "",
+    ).slice(0, 10),
+  };
+  if (options.saved !== undefined) result.saved = !!options.saved;
+  return result;
+}
+
+function numericOrStringId(id) {
+  const raw = String(id || "").trim();
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return raw;
+}
+
+function toComment(item, fallbackUser) {
+  if (!item || item.id === undefined || item.id === null) return null;
+  const user = item.user || fallbackUser || {};
+  const parsedTime = item.created_at ? Date.parse(item.created_at) : 0;
+  return {
+    id: String(item.id),
+    author:
+      user.username || user.full_name || user.name || t("Unknown"),
+    avatarUrl: image(user.avatar_url || user.imageUrl),
+    text: String(item.body || ""),
+    time: Number.isFinite(parsedTime) && parsedTime > 0 ? parsedTime : 0,
+  };
+}
+
+const PODCAST_HINT_RE =
+  /\b(podcasts?|episodes?|audiobooks?|storytelling|talk\s+show|radio\s+show|spoken\s+word)\b|播客|电台节目/i;
+
+function isPodcastPlaylist(playlist) {
+  if (!playlist || playlist.is_album) return false;
+  const fields = [
+    playlist.title,
+    playlist.genre,
+    playlist.tag_list,
+    playlist.description,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return PODCAST_HINT_RE.test(fields);
+}
+
+function toShow(playlist, options = {}) {
+  const publisher =
+    (playlist.user && (playlist.user.username || playlist.user.full_name)) || "";
+  const publisherId =
+    playlist.user && playlist.user.id !== undefined
+      ? String(playlist.user.id)
+      : "";
+  const result = {
+    id: String(playlist.id),
+    name: playlist.title || "",
+    imageUrl: image(
+      playlist.artwork_url || (playlist.user && playlist.user.avatar_url),
+    ),
+    description: String(playlist.description || ""),
+    publisher,
+    ...(publisherId ? { publisherPage: `user:${publisherId}` } : {}),
+    episodeCount: Number(
+      playlist.track_count ||
+        (Array.isArray(playlist.tracks) ? playlist.tracks.length : 0) ||
+        0,
+    ),
+  };
+  if (options.subscribed !== undefined) result.subscribed = !!options.subscribed;
+  return result;
+}
+
+function toEpisode(track, show) {
+  const base = toTrack(track, show);
+  if (!base) return null;
+  return {
+    ...base,
+    showId: String(show.id),
+    description: String(track.description || ""),
+    published: String(
+      track.release_date || track.display_date || track.created_at || "",
     ).slice(0, 10),
   };
 }
@@ -1268,7 +1437,9 @@ export async function browse({ page }) {
     const response = await api(`/users/${me.id}/followings`, {
       query: { limit: 100, linked_partitioning: 1 },
     });
-    const artists = (response.collection || []).map((user) => toArtist(user));
+    const artists = (response.collection || []).map((user) =>
+      toArtist(user, { following: true }),
+    );
     return {
       title: t("Following"),
       sections: [
@@ -1278,6 +1449,50 @@ export async function browse({ page }) {
           empty: t("You do not follow anyone yet"),
         },
       ],
+    };
+  }
+
+  if (String(page || "").startsWith("user:")) {
+    const userId = String(page).slice(5);
+    if (!userId) throw fail("unavailable", t("No such page"));
+    const [user, tracksRes, playlistsRes] = await Promise.all([
+      api(`/users/${encodeURIComponent(userId)}`),
+      api(`/users/${encodeURIComponent(userId)}/tracks`, {
+        query: { limit: 30, linked_partitioning: 1 },
+      }).catch(() => ({ collection: [] })),
+      api(`/users/${encodeURIComponent(userId)}/playlists`, {
+        query: { limit: 24, linked_partitioning: 1 },
+      }).catch(() => ({ collection: [] })),
+    ]);
+
+    const sections = [];
+    const collection = playlistsRes.collection || [];
+    const showsList = collection
+      .filter((item) => isPodcastPlaylist(item))
+      .map((item) => toShow(item));
+    const playlistsList = collection
+      .filter((item) => !item.is_album && !isPodcastPlaylist(item))
+      .map((item) => toPlaylist(item));
+    const albumsList = collection
+      .filter((item) => item.is_album)
+      .map((item) => toAlbum(item));
+    const tracksList = (tracksRes.collection || [])
+      .map((track) => toTrack(track))
+      .filter(Boolean);
+
+    if (showsList.length) sections.push({ title: t("Podcasts"), shows: showsList });
+    if (playlistsList.length)
+      sections.push({ title: t("Playlists"), playlists: playlistsList });
+    if (albumsList.length)
+      sections.push({ title: t("Albums"), albums: albumsList });
+    if (tracksList.length)
+      sections.push({ title: t("Tracks"), tracks: tracksList });
+
+    return {
+      title: user.username || user.full_name || "",
+      imageUrl: image(user.avatar_url),
+      description: String(user.description || ""),
+      sections,
     };
   }
 
@@ -1345,6 +1560,42 @@ export async function browse({ page }) {
 // Search
 
 export async function search({ query, kind, offset = 0 }) {
+  if (kind === "shows") {
+    const trimmed = String(query || "").trim();
+    const hasPodcastWord = /\bpodcasts?\b|播客/i.test(trimmed);
+    const primaryQuery =
+      !trimmed || hasPodcastWord ? trimmed : `${trimmed} podcast`;
+
+    let response = await api("/search/playlists_without_albums", {
+      query: { q: primaryQuery, limit: PAGE, offset },
+      auth: false,
+    });
+    let collection = response.collection || [];
+
+    if (!collection.length && offset === 0 && primaryQuery !== trimmed) {
+      response = await api("/search/playlists_without_albums", {
+        query: { q: trimmed, limit: PAGE, offset },
+        auth: false,
+      });
+      collection = response.collection || [];
+    }
+
+    const [me, likedSet] = hasSession()
+      ? await Promise.all([
+          meNow().catch(() => null),
+          likedPlaylistIds().catch(() => new Set()),
+        ])
+      : [null, new Set()];
+    const showsList = collection
+      .filter((item) => item && !item.is_album)
+      .map((playlist) =>
+        toShow(playlist, {
+          subscribed: isShowSubscribed(playlist, me, likedSet),
+        }),
+      );
+    return { shows: showsList, more: hasMore(response, showsList.length) };
+  }
+
   const paths = {
     tracks: "/search/tracks",
     albums: "/search/albums",
@@ -1393,6 +1644,137 @@ export async function suggest({ query }) {
 }
 
 // ---------------------------------------------------------------------------
+// Account state caches (likes, saved playlists/albums, followings, shows)
+
+async function fetchIdSet(initialPath) {
+  const ids = new Set();
+  let nextPath = initialPath;
+  let query = { limit: 200, linked_partitioning: 1 };
+
+  for (let page = 0; page < ID_SET_MAX_PAGES && nextPath; page++) {
+    const response = await api(nextPath, { query });
+    for (const item of response.collection || []) {
+      const value =
+        item && typeof item === "object" ? item.id : item;
+      if (value !== undefined && value !== null && value !== "") {
+        ids.add(String(value));
+      }
+    }
+    nextPath = response.next_href || "";
+    query = {};
+  }
+
+  return ids;
+}
+
+async function likedTrackIds(force = false) {
+  if (!hasSession()) return new Set();
+  if (
+    !force &&
+    likedTrackIdsCache &&
+    Date.now() - likedTrackIdsCache.at < STATE_CACHE_TTL
+  ) {
+    return likedTrackIdsCache.ids;
+  }
+  if (likedTrackIdsPromise) return likedTrackIdsPromise;
+
+  const gen = sessionGen;
+  likedTrackIdsPromise = fetchIdSet("/me/track_likes/ids")
+    .then((ids) => {
+      if (gen === sessionGen) {
+        likedTrackIdsCache = { ids, at: Date.now() };
+      }
+      return ids;
+    })
+    .finally(() => {
+      likedTrackIdsPromise = null;
+    });
+
+  return likedTrackIdsPromise;
+}
+
+async function likedPlaylistIds(force = false) {
+  if (!hasSession()) return new Set();
+  if (
+    !force &&
+    likedPlaylistIdsCache &&
+    Date.now() - likedPlaylistIdsCache.at < STATE_CACHE_TTL
+  ) {
+    return likedPlaylistIdsCache.ids;
+  }
+  if (likedPlaylistIdsPromise) return likedPlaylistIdsPromise;
+
+  const gen = sessionGen;
+  likedPlaylistIdsPromise = fetchIdSet("/me/playlist_likes/ids")
+    .then((ids) => {
+      if (gen === sessionGen) {
+        likedPlaylistIdsCache = { ids, at: Date.now() };
+      }
+      return ids;
+    })
+    .finally(() => {
+      likedPlaylistIdsPromise = null;
+    });
+
+  return likedPlaylistIdsPromise;
+}
+
+async function followingIds(force = false) {
+  if (!hasSession()) return new Set();
+  if (
+    !force &&
+    followingIdsCache &&
+    Date.now() - followingIdsCache.at < STATE_CACHE_TTL
+  ) {
+    return followingIdsCache.ids;
+  }
+  if (followingIdsPromise) return followingIdsPromise;
+
+  const gen = sessionGen;
+  followingIdsPromise = (async () => {
+    const me = await meNow();
+    const ids = await fetchIdSet(`/users/${me.id}/followings/ids`);
+    if (gen === sessionGen) {
+      followingIdsCache = { ids, at: Date.now() };
+    }
+    return ids;
+  })().finally(() => {
+    followingIdsPromise = null;
+  });
+
+  return followingIdsPromise;
+}
+
+function showStorageKeys(userId) {
+  return {
+    sub: `shows:sub:${userId}`,
+    unsub: `shows:unsub:${userId}`,
+  };
+}
+
+function storedShowIds(userId, which) {
+  const keys = showStorageKeys(userId);
+  const list = load(keys[which], []);
+  return Array.isArray(list) ? list.map((id) => String(id)).filter(Boolean) : [];
+}
+
+function saveShowIds(userId, which, ids) {
+  const keys = showStorageKeys(userId);
+  save(keys[which], [...new Set(ids.map((id) => String(id)).filter(Boolean))]);
+}
+
+function isShowSubscribed(playlist, me, likedSet) {
+  if (!me || !playlist || playlist.id === undefined || playlist.id === null) {
+    return false;
+  }
+  const key = String(playlist.id);
+  const subSet = new Set(storedShowIds(me.id, "sub"));
+  if (subSet.has(key)) return true;
+  const unsubSet = new Set(storedShowIds(me.id, "unsub"));
+  return !unsubSet.has(key) && isPodcastPlaylist(playlist) && likedSet.has(key);
+}
+
+// ---------------------------------------------------------------------------
 // Library
 
 export async function playlists() {
@@ -1423,7 +1805,7 @@ export async function playlists() {
 
   if (likes.status === "fulfilled") {
     for (const item of likes.value.collection || []) {
-      if (!item.playlist) continue;
+      if (!item.playlist || item.playlist.is_album) continue;
       const mapped = toPlaylist(item.playlist, { saved: true });
       if (seen.has(mapped.id)) continue;
       seen.add(mapped.id);
@@ -1435,31 +1817,58 @@ export async function playlists() {
 }
 
 export async function playlist({ id }) {
-  const me = await meNow().catch(() => null);
-  const data = await api(`/playlists/${encodeURIComponent(id)}`);
+  const [me, data, likedSet] = await Promise.all([
+    meNow().catch(() => null),
+    api(`/playlists/${encodeURIComponent(id)}`),
+    hasSession() ? likedPlaylistIds().catch(() => new Set()) : Promise.resolve(new Set()),
+  ]);
   const mine = !!(me && data.user && String(data.user.id) === me.id);
-  return playlistPage(data, { mine });
+  const saved = !mine && likedSet.has(String(data.id));
+  return playlistPage(data, { mine, saved });
 }
 
 export async function album({ id }) {
-  if (String(id).startsWith("track:")) {
-    const track = toTrack(await rawTrack(String(id).slice(6)));
-    return { album: track.album, tracks: track ? [track] : [] };
+  const key = String(id);
+  if (key.startsWith("track:")) {
+    const trackId = key.slice(6);
+    const [raw, likedSet] = await Promise.all([
+      rawTrack(trackId),
+      hasSession() ? likedTrackIds().catch(() => new Set()) : Promise.resolve(new Set()),
+    ]);
+    const track = toTrack(raw);
+    if (!track) throw fail("unavailable", t("SoundCloud has nothing at that address"));
+    track.album.saved = likedSet.has(trackId);
+    return { album: track.album, tracks: [track] };
   }
 
-  const data = await api(`/playlists/${encodeURIComponent(id)}`);
-  return { album: toAlbum(data), tracks: await playlistTracks(data) };
+  const [data, likedSet] = await Promise.all([
+    api(`/playlists/${encodeURIComponent(key)}`),
+    hasSession() ? likedPlaylistIds().catch(() => new Set()) : Promise.resolve(new Set()),
+  ]);
+  const saved = likedSet.has(String(data.id));
+  return {
+    album: toAlbum(data, { saved }),
+    tracks: await playlistTracks(data),
+  };
 }
 
 export async function artist({ id }) {
-  const user = await api(`/users/${encodeURIComponent(id)}`);
-  const [tracks, playlists] = await Promise.allSettled([
-    api(`/users/${encodeURIComponent(id)}/tracks`, {
+  const key = String(id);
+  const [user, tracks, playlists, followed] = await Promise.all([
+    api(`/users/${encodeURIComponent(key)}`),
+    api(`/users/${encodeURIComponent(key)}/tracks`, {
       query: { limit: 50, linked_partitioning: 1 },
-    }),
-    api(`/users/${encodeURIComponent(id)}/playlists`, {
+    }).then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    ),
+    api(`/users/${encodeURIComponent(key)}/playlists`, {
       query: { limit: 24, linked_partitioning: 1 },
-    }),
+    }).then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    ),
+    hasSession() ? followingIds().catch(() => new Set()) : Promise.resolve(new Set()),
   ]);
 
   const top =
@@ -1476,7 +1885,11 @@ export async function artist({ id }) {
           .map((item) => toAlbum(item))
       : [];
 
-  return { artist: toArtist(user), tracks: top, albums };
+  return {
+    artist: toArtist(user, { following: followed.has(key) }),
+    tracks: top,
+    albums,
+  };
 }
 
 export async function liked({ offset = 0 } = {}) {
@@ -1488,7 +1901,371 @@ export async function liked({ offset = 0 } = {}) {
   const tracks = (response.collection || [])
     .map((item) => toTrack(item.track))
     .filter(Boolean);
+  if (likedTrackIdsCache) {
+    for (const tr of tracks) likedTrackIdsCache.ids.add(tr.id);
+  }
   return { tracks, more: hasMore(response, tracks.length) };
+}
+
+// ---------------------------------------------------------------------------
+// Likes, saves and following
+
+export async function isLiked({ ids } = {}) {
+  const list = Array.isArray(ids) ? ids : [];
+  if (!hasSession() || !list.length) return {};
+  const set = await likedTrackIds();
+  const out = {};
+  for (const id of list) {
+    const key = String(id);
+    out[key] = set.has(key);
+  }
+  return out;
+}
+
+export async function like({ id, on }) {
+  requireToken();
+  const me = await meNow();
+  const key = String(id);
+  await api(`/users/${me.id}/track_likes/${encodeURIComponent(key)}`, {
+    method: on ? "PUT" : "DELETE",
+  });
+  if (likedTrackIdsCache) {
+    if (on) likedTrackIdsCache.ids.add(key);
+    else likedTrackIdsCache.ids.delete(key);
+  }
+}
+
+export async function likeEpisode({ id, on }) {
+  return like({ id, on });
+}
+
+export async function savePlaylist({ id, on }) {
+  requireToken();
+  const me = await meNow();
+  const key = String(id);
+  await api(`/users/${me.id}/playlist_likes/${encodeURIComponent(key)}`, {
+    method: on ? "PUT" : "DELETE",
+  });
+  if (likedPlaylistIdsCache) {
+    if (on) likedPlaylistIdsCache.ids.add(key);
+    else likedPlaylistIdsCache.ids.delete(key);
+  }
+}
+
+export async function saveAlbum({ id, on }) {
+  requireToken();
+  const key = String(id);
+  if (key.startsWith("track:")) {
+    return like({ id: key.slice(6), on });
+  }
+  return savePlaylist({ id: key, on });
+}
+
+export async function savedAlbums({ offset = 0 } = {}) {
+  requireToken();
+  const me = await meNow();
+  const albums = [];
+  const seen = new Set();
+  const targetCount = offset + PAGE + 1;
+  let nextPath = `/users/${me.id}/likes`;
+  let query = { limit: 200, linked_partitioning: 1 };
+
+  for (let page = 0; page < 10 && nextPath && albums.length < targetCount; page++) {
+    const response = await api(nextPath, { query });
+    for (const item of response.collection || []) {
+      if (!item || !item.playlist || !item.playlist.is_album) continue;
+      const mapped = toAlbum(item.playlist, { saved: true });
+      if (seen.has(mapped.id)) continue;
+      seen.add(mapped.id);
+      albums.push(mapped);
+    }
+    nextPath = response.next_href || "";
+    query = {};
+  }
+
+  const pageAlbums = albums.slice(offset, offset + PAGE);
+  const more = albums.length > offset + PAGE || !!nextPath;
+  return { albums: pageAlbums, more };
+}
+
+export async function followArtist({ id, on }) {
+  requireToken();
+  const me = await meNow();
+  const key = String(id);
+
+  if (on) {
+    await api(`/me/followings/${encodeURIComponent(key)}`, {
+      method: "POST",
+      query: (clientId) => ({
+        signature: signFollow(me.id, key, clientId, followSecretValue(), UA),
+      }),
+    });
+  } else {
+    await api(`/me/followings/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+    });
+  }
+
+  if (followingIdsCache) {
+    if (on) followingIdsCache.ids.add(key);
+    else followingIdsCache.ids.delete(key);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Playlist editing
+
+async function playlistTrackIds(id) {
+  const data = await api(`/playlists/${encodeURIComponent(id)}`);
+  return (data.tracks || [])
+    .map((item) => item.track || item)
+    .filter((item) => item && item.id !== undefined && item.id !== null)
+    .map((item) => numericOrStringId(item.id));
+}
+
+export async function createPlaylist({ name }) {
+  requireToken();
+  const title = String(name || "").trim();
+  if (!title) throw new Error(t("Playlist name cannot be empty"));
+  const created = await api("/playlists", {
+    method: "POST",
+    body: { playlist: { title, sharing: "public", tracks: [] } },
+  });
+  return toPlaylist(created, { mine: true });
+}
+
+export async function renamePlaylist({ id, name }) {
+  requireToken();
+  const title = String(name || "").trim();
+  if (!title) throw new Error(t("Playlist name cannot be empty"));
+  await api(`/playlists/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: { playlist: { title } },
+  });
+}
+
+export async function deletePlaylist({ id }) {
+  requireToken();
+  await api(`/playlists/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function addToPlaylist({ id, trackIds }) {
+  requireToken();
+  const additions = Array.isArray(trackIds) ? trackIds : [];
+  if (!additions.length) return;
+  const current = await playlistTrackIds(id);
+  const existing = new Set(current.map((item) => String(item)));
+  const next = current.slice();
+  for (const tid of additions) {
+    const key = String(tid || "").trim();
+    if (!key || existing.has(key)) continue;
+    existing.add(key);
+    next.push(numericOrStringId(key));
+  }
+  await api(`/playlists/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: { playlist: { tracks: next } },
+  });
+}
+
+export async function removeFromPlaylist({ id, trackIds }) {
+  requireToken();
+  const removals = new Set(
+    (Array.isArray(trackIds) ? trackIds : []).map((tid) => String(tid)),
+  );
+  if (!removals.size) return;
+  const current = await playlistTrackIds(id);
+  const next = current.filter((tid) => !removals.has(String(tid)));
+  await api(`/playlists/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: { playlist: { tracks: next } },
+  });
+}
+
+export async function movePlaylistTrack({ id, from, to }) {
+  requireToken();
+  const fromIdx = Number(from);
+  const toIdx = Number(to);
+  if (
+    !Number.isInteger(fromIdx) ||
+    !Number.isInteger(toIdx) ||
+    fromIdx === toIdx
+  ) {
+    return;
+  }
+  const current = await playlistTrackIds(id);
+  if (
+    fromIdx < 0 ||
+    toIdx < 0 ||
+    fromIdx >= current.length ||
+    toIdx >= current.length
+  ) {
+    return;
+  }
+  const next = current.slice();
+  const [moved] = next.splice(fromIdx, 1);
+  next.splice(toIdx, 0, moved);
+  await api(`/playlists/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: { playlist: { tracks: next } },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Comments
+
+export async function comments({ trackId, offset = 0 }) {
+  const key = String(trackId);
+  const [response, trackMeta] = await Promise.all([
+    api(`/tracks/${encodeURIComponent(key)}/comments`, {
+      query: {
+        sort: "newest",
+        limit: PAGE,
+        offset,
+        linked_partitioning: 1,
+        threaded: 0,
+      },
+    }),
+    offset === 0 ? rawTrack(key).catch(() => null) : Promise.resolve(null),
+  ]);
+
+  const list = (response.collection || [])
+    .map((item) => toComment(item))
+    .filter(Boolean);
+  const total =
+    trackMeta && Number.isFinite(Number(trackMeta.comment_count))
+      ? Number(trackMeta.comment_count)
+      : undefined;
+
+  return {
+    comments: list,
+    ...(total !== undefined ? { total } : {}),
+    more: hasMore(response, list.length),
+  };
+}
+
+export async function postComment({ trackId, text }) {
+  requireToken();
+  const body = String(text || "").trim();
+  if (!body) throw new Error(t("Comment cannot be empty"));
+  const key = String(trackId);
+  const [created, me] = await Promise.all([
+    api(`/tracks/${encodeURIComponent(key)}/comments`, {
+      method: "POST",
+      form: { body, timestamp: 0 },
+    }),
+    meNow().catch(() => null),
+  ]);
+
+  const cached = rawTracks.get(key);
+  if (cached && cached.data && Number.isFinite(Number(cached.data.comment_count))) {
+    cached.data.comment_count = Number(cached.data.comment_count) + 1;
+  }
+
+  return toComment(created, me);
+}
+
+// ---------------------------------------------------------------------------
+// Podcasts (Shows)
+
+export async function shows() {
+  if (!hasSession()) return [];
+  const me = await meNow();
+  const explicitIds = storedShowIds(me.id, "sub");
+  const unsubSet = new Set(storedShowIds(me.id, "unsub"));
+
+  const likesResponse = await api(`/users/${me.id}/likes`, {
+    query: { limit: 200, linked_partitioning: 1 },
+  }).catch(() => ({ collection: [] }));
+
+  const byId = new Map();
+  for (const item of likesResponse.collection || []) {
+    if (!item || !item.playlist || item.playlist.is_album) continue;
+    const pid = String(item.playlist.id);
+    byId.set(pid, item.playlist);
+  }
+
+  const orderedIds = [];
+  const seen = new Set();
+
+  for (const id of explicitIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    orderedIds.push(id);
+  }
+
+  for (const [pid, pl] of byId.entries()) {
+    if (seen.has(pid) || unsubSet.has(pid)) continue;
+    if (!isPodcastPlaylist(pl)) continue;
+    seen.add(pid);
+    orderedIds.push(pid);
+  }
+
+  const missingIds = orderedIds.filter((id) => !byId.has(id));
+  if (missingIds.length) {
+    const fetched = await Promise.allSettled(
+      missingIds.map((id) => api(`/playlists/${encodeURIComponent(id)}`)),
+    );
+    for (let i = 0; i < missingIds.length; i++) {
+      if (fetched[i].status === "fulfilled" && fetched[i].value) {
+        byId.set(missingIds[i], fetched[i].value);
+      }
+    }
+  }
+
+  return orderedIds
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((pl) => toShow(pl, { subscribed: true }));
+}
+
+export async function show({ id, offset = 0 }) {
+  const key = String(id);
+  const [data, me, likedSet] = await Promise.all([
+    api(`/playlists/${encodeURIComponent(key)}`),
+    hasSession() ? meNow().catch(() => null) : Promise.resolve(null),
+    hasSession() ? likedPlaylistIds().catch(() => new Set()) : Promise.resolve(new Set()),
+  ]);
+
+  const subscribed = isShowSubscribed(data, me, likedSet);
+
+  const entries = (data.tracks || [])
+    .map((item) => item.track || item)
+    .filter((track) => track && track.id);
+  const slice = entries.slice(offset, offset + PAGE);
+  const full = await hydrateTracks(slice);
+  const episodes = full
+    .filter((track) => track && track.title)
+    .map((track) => toEpisode(track, data))
+    .filter(Boolean);
+
+  return {
+    show: toShow(data, { subscribed }),
+    episodes,
+    more: offset + PAGE < entries.length,
+  };
+}
+
+export async function subscribeShow({ id, on }) {
+  requireToken();
+  const me = await meNow();
+  const key = String(id);
+
+  await savePlaylist({ id: key, on });
+
+  const sub = storedShowIds(me.id, "sub").filter((item) => item !== key);
+  const unsub = storedShowIds(me.id, "unsub").filter((item) => item !== key);
+
+  if (on) {
+    sub.unshift(key);
+  } else {
+    unsub.unshift(key);
+  }
+
+  saveShowIds(me.id, "sub", sub);
+  saveShowIds(me.id, "unsub", unsub);
 }
 
 // ---------------------------------------------------------------------------
@@ -1536,7 +2313,7 @@ const lyricCache = new Map();
 
 async function lrclib(path) {
   const response = await request(LRCLIB + path, {
-    headers: { "user-agent": "mygo-soundcloud/0.1.2 (MyGo Music plugin)" },
+    headers: { "user-agent": "mygo-soundcloud/0.1.3 (MyGo Music plugin)" },
   });
   if (response.status === 404) return null;
   if (response.status !== 200) return null;

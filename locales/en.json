@@ -29,6 +29,7 @@
   "SoundCloud rejected the request": "SoundCloud rejected the request",
   "SoundCloud has nothing at that address": "SoundCloud has nothing at that address",
   "SoundCloud will not play this": "SoundCloud will not play this",
+  "SoundCloud did not allow this action": "SoundCloud did not allow this action",
   "SoundCloud is rate limiting: try again later": "SoundCloud is rate limiting: try again later",
   "SoundCloud answered": "SoundCloud answered",
   "Could not reach SoundCloud: check your network or proxy": "Could not reach SoundCloud: check your network or proxy",
@@ -39,5 +40,12 @@
   "SoundCloud did not give out a stream for this track": "SoundCloud did not give out a stream for this track",
   "SoundGo's built-in HLS helper is missing: reinstall the platform release ZIP": "SoundGo's built-in HLS helper is missing: reinstall the platform release ZIP",
   "The audio did not start": "The audio did not start",
-  "This track is encrypted with DRM, so SoundCloud will not let a plugin play it": "This track is encrypted with DRM, so SoundCloud will not let a plugin play it"
+  "This track is encrypted with DRM, so SoundCloud will not let a plugin play it": "This track is encrypted with DRM, so SoundCloud will not let a plugin play it",
+  "Unknown": "Unknown",
+  "Podcasts": "Podcasts",
+  "Playlists": "Playlists",
+  "Albums": "Albums",
+  "Tracks": "Tracks",
+  "Playlist name cannot be empty": "Playlist name cannot be empty",
+  "Comment cannot be empty": "Comment cannot be empty"
 }

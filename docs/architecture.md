@@ -10,8 +10,7 @@ This plugin brings SoundCloud into MyGo Music. It covers two jobs:
 - **Playback** — resolving SoundCloud's audio and handing the app an MP3 it can
   decode.
 
-The scope is deliberately read-only. Liking, following, playlist editing,
-comments, podcasts and remote playback are not implemented.
+The plugin supports both browsing and account mutations: liking tracks/episodes, saving playlists and albums, following artists, creating/renaming/deleting/editing playlists, reading and posting track comments, and browsing/subscribing to SoundCloud podcasts. Comment likes (not supported by SoundCloud's API) and remote playback are not implemented.
 
 The plugin talks to SoundCloud's private web API (`api-v2.soundcloud.com`), not
 the public developer API. There is no registered OAuth application. A listener's

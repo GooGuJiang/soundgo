@@ -27,9 +27,9 @@ The public catalog, search and playback work without signing in.
 
 ## What works
 
-- Signed out: Home, charts, search (tracks, albums, artists, playlists), artist pages, album and playlist pages, playback, lyrics.
-- Signed in: your stream, recently played, your playlists, liked tracks, liked playlists, your own tracks, and a personal Home and My Page.
-- Not available: liking, following, editing playlists, comments and podcasts.
+- Signed out: Home, charts, search (tracks, albums, artists, playlists, podcasts), artist pages, album, playlist and podcast pages, comments, playback, lyrics.
+- Signed in: your stream, recently played, your playlists (create, rename, delete, add/remove/reorder tracks), liking tracks and podcast episodes, saving playlists and albums, following artists, posting comments, subscribing to podcasts, your own tracks, and a personal Home and My Page.
+- Not available: liking individual comments (SoundCloud has no comment-like API) and remote playback.
 
 ## How it plays
 
