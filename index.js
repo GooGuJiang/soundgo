@@ -458,6 +458,7 @@ let sessionGen = 0;
 let refreshPromise = null;
 let refreshTimer = null;
 let refreshRetryCount = 0;
+let likedCursor = null;
 
 function tokenExpiresAt() {
   const stored = Number(host.storage.get("tokenExpiresAt") || 0);
@@ -505,6 +506,7 @@ function clearSession() {
   host.storage.remove("refreshToken");
   host.storage.remove("tokenExpiresAt");
   meCache = null;
+  likedCursor = null;
 }
 
 function saveSession({ accessToken, refreshToken: nextRefresh, expiresIn }) {
@@ -783,6 +785,7 @@ export async function signIn() {
   const gen = ++sessionGen;
   clearRefreshTimer();
   meCache = null;
+  likedCursor = null;
 
   if (!access && !refresh) {
     if (typeof host.webSignIn !== "function") {
@@ -1482,13 +1485,50 @@ export async function artist({ id }) {
 export async function liked({ offset = 0 } = {}) {
   requireToken();
   const me = await meNow();
-  const response = await api(`/users/${me.id}/track_likes`, {
-    query: { limit: PAGE, offset, linked_partitioning: 1 },
-  });
+
+  // SoundCloud's /users/:id/track_likes uses opaque timestamp cursors in
+  // next_href and rejects numeric offsets > 0 with 400 (ChronoParams.Cursor).
+  let response;
+  if (offset <= 0) {
+    likedCursor = null;
+    response = await api(`/users/${me.id}/track_likes`, {
+      query: { limit: PAGE, linked_partitioning: 1 },
+    });
+  } else if (likedCursor && Math.abs(offset - likedCursor.at) <= 5) {
+    response = await api(likedCursor.href);
+  } else {
+    const all = [];
+    let nextPath = `/users/${me.id}/track_likes`;
+    let query = { limit: 50, linked_partitioning: 1 };
+    for (
+      let page = 0;
+      page < 20 && nextPath && all.length < offset + PAGE;
+      page++
+    ) {
+      const batch = await api(nextPath, { query });
+      for (const item of batch.collection || []) {
+        const mapped = toTrack(item.track);
+        if (mapped) all.push(mapped);
+      }
+      nextPath = batch.next_href || "";
+      query = undefined;
+    }
+    const tracks = all.slice(offset, offset + PAGE);
+    likedCursor =
+      nextPath && all.length >= offset + PAGE
+        ? { at: all.length, href: nextPath }
+        : null;
+    return { tracks, more: all.length > offset + PAGE || !!nextPath };
+  }
+
   const tracks = (response.collection || [])
     .map((item) => toTrack(item.track))
     .filter(Boolean);
-  return { tracks, more: hasMore(response, tracks.length) };
+  const nextHref = response.next_href || "";
+  likedCursor = nextHref
+    ? { at: offset + tracks.length, href: nextHref }
+    : null;
+  return { tracks, more: !!nextHref };
 }
 
 // ---------------------------------------------------------------------------

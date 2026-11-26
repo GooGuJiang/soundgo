@@ -725,4 +725,64 @@ describe("SoundGo automatic token refresh", () => {
     expect(err.code).toBe("setup");
     expect(spawned).toEqual(["bin/hls-helper-windows-amd64.exe", "bin/hls-helper.exe"]);
   });
+
+  // Regression: SoundCloud /users/:id/track_likes rejects numeric offsets > 0
+  // with 400 (ChronoParams.Cursor) and requires following opaque next_href cursors.
+  test("liked paginates with SoundCloud opaque next_href cursors instead of numeric offset", async () => {
+    const validJwt = makeJwt({ exp: Math.floor((Date.now() + 3600 * 1000) / 1000) });
+    const requestedUrls = [];
+
+    const { plugin } = await setupPlugin({
+      storage: {
+        clientId: "WebClientId123456789012345678901",
+        clientIdAt: Date.now(),
+        token: validJwt,
+      },
+      fetchImpl: async (url) => {
+        if (url.includes("/me?")) {
+          return jsonResponse(200, { id: 42, username: "alice", avatar_url: "" });
+        }
+        if (url.includes("/users/42/track_likes")) {
+          requestedUrls.push(url);
+          const parsed = new URL(url);
+          const cursor = parsed.searchParams.get("offset");
+          if (cursor && /^\d+$/.test(cursor) && cursor !== "0") {
+            return jsonResponse(400, {
+              message: `ChronoParams.Cursor: invalid cursor format: ${cursor}`,
+            });
+          }
+          if (!cursor) {
+            return jsonResponse(200, {
+              collection: [
+                { track: { id: 1, title: "Song 1", duration: 1000, user: { id: 9, username: "a" } } },
+                { track: { id: 2, title: "Song 2", duration: 1000, user: { id: 9, username: "a" } } },
+              ],
+              next_href:
+                "https://api-v2.soundcloud.com/users/42/track_likes?offset=2025-12-27T21%3A42%3A37.486Z%2Cuser-track-likes%2C000-42-2&limit=20",
+            });
+          }
+          return jsonResponse(200, {
+            collection: [
+              { track: { id: 3, title: "Song 3", duration: 1000, user: { id: 9, username: "a" } } },
+            ],
+            next_href: null,
+          });
+        }
+        throw new Error("unexpected url: " + url);
+      },
+    });
+
+    const page1 = await plugin.liked({ offset: 0 });
+    expect(page1.tracks.map((t) => t.id)).toEqual(["1", "2"]);
+    expect(page1.more).toBe(true);
+
+    const page2 = await plugin.liked({ offset: 2 });
+    expect(page2.tracks.map((t) => t.id)).toEqual(["3"]);
+    expect(page2.more).toBe(false);
+
+    expect(new URL(requestedUrls[0]).searchParams.get("offset")).toBeNull();
+    expect(new URL(requestedUrls[1]).searchParams.get("offset")).toContain(
+      "2025-12-27T21:42:37.486Z",
+    );
+  });
 });
