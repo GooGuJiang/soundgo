@@ -1,16 +1,16 @@
 # SoundGo for MyGo Music
 
 > **Compatibility Notice / 兼容性说明:**  
-> This fork is adapted for a **custom local MyGo Music build** that exposes `host.webFetch` (browser-backed WebView requests with interactive verification for SoundCloud's DataDome-protected write endpoints). **It is NOT compatible with official upstream MyGo Music** for write actions (liking tracks/episodes, saving playlists/albums, following artists, editing playlists, and posting comments); read-only browsing, playback, viewing comments, and podcasts still work without `host.webFetch`.
+> This fork is adapted for **[GooGuJiang/mygo-music](https://github.com/GooGuJiang/mygo-music)**, a custom MyGo Music build that exposes `host.webFetch` (browser-backed WebView requests with interactive verification for SoundCloud's DataDome-protected write endpoints). **It is NOT compatible with official upstream MyGo Music** for write actions (liking tracks/episodes, saving playlists/albums, following artists, editing playlists, and posting comments); read-only browsing, playback, viewing comments, and podcasts still work without `host.webFetch`.
 
-Plays SoundCloud in [MyGo Music](https://github.com/egoist/mygo-music), including the library of a personal account. It uses SoundCloud's private web API, is not affiliated with or endorsed by SoundCloud, and may stop working at any time.
+Plays SoundCloud in [MyGo Music](https://github.com/GooGuJiang/mygo-music), including the library of a personal account. This repository is a modified fork of [Satyawikananda/SoundGo](https://github.com/satyawikananda/soundgo). It uses SoundCloud's private web API, is not affiliated with or endorsed by SoundCloud, and may stop working at any time.
 
 ## Install
 
-Install in MyGo Music, or add this repository in **Settings > Plugins > +**:
+Install in [GooGuJiang/mygo-music](https://github.com/GooGuJiang/mygo-music), or add this repository in **Settings > Plugins > +**:
 
 ```
-https://github.com/satyawikananda/soundgo
+https://github.com/GooGuJiang/soundgo
 ```
 
 Use the platform-specific plugin ZIP attached to a release for manual installation (MyGo Music picks it automatically when installing from GitHub), not GitHub's source ZIP. The minimum supported MyGo Music version is listed in `plugin.json` as `minAppVersion`.
@@ -50,12 +50,17 @@ The plugin talks to `soundcloud.com`, `*.soundcloud.com`, `api-v2.soundcloud.com
 
 ## Credits
 
-- [MyGo Music](https://github.com/egoist/mygo-music) by egoist: the plugin runtime, its demo plugin, and the data model this plugin follows.
-- [YouTube Music for MyGo Music](https://github.com/egoist/mygo-music-youtube-music) by egoist: the pattern of serving ffmpeg's MP3 on `127.0.0.1`, rewritten here for SoundCloud's HLS.
+- [Satyawikananda/SoundGo](https://github.com/satyawikananda/soundgo) by Satyawikananda: the original SoundGo plugin that this fork is built upon — thank you for creating SoundGo!
+- [MyGo Music](https://github.com/egoist/mygo-music) by egoist: the plugin runtime, its demo plugin, and the data model this plugin follows (adapted fork used here: [GooGuJiang/mygo-music](https://github.com/GooGuJiang/mygo-music)).
+- [YouTube Music for MyGo Music](https://github.com/egoist/mygo-music-youtube-music) by egoist: the pattern of serving local audio streams on `127.0.0.1`.
 - [LRCLIB](https://lrclib.net) for lyrics.
 
 SoundGo is an independent plugin. It is not affiliated with or endorsed by SoundCloud, MyGo Music, or the projects above.
 
-## License
+## License & Notice of Modifications (AGPL-3.0-only)
 
-AGPL-3.0. See [LICENSE](LICENSE).
+Licensed under the **GNU Affero General Public License v3.0 only (`AGPL-3.0-only`)**. See [LICENSE](LICENSE).
+
+- **Original Work:** Based on [Satyawikananda/SoundGo](https://github.com/satyawikananda/soundgo) (Copyright © 2026 SoundGo contributors).
+- **Modifications (2026, GooGuJiang):** Modularized the plugin into TypeScript (`src/`), added built-in popup-free web sign-in and automatic OAuth refresh-token rotation, replaced `ffmpeg` with a bundled pure-Go HLS helper (`helper/`), added likes/saves/follow/playlist editing/comments/podcasts and `liked()` cursor pagination, and integrated `host.webFetch` for [GooGuJiang/mygo-music](https://github.com/GooGuJiang/mygo-music).
+- **Corresponding Source:** The complete source code (TypeScript sources under `src/`, Go HLS helper under `helper/`, and build scripts under `scripts/`) for every bundled Release ZIP is publicly available at [https://github.com/GooGuJiang/soundgo](https://github.com/GooGuJiang/soundgo) under the matching release tag.

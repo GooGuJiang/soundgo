@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 SoundGo contributors
 
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.2.1";
 
 export const API = "https://api-v2.soundcloud.com";
 export const AUTH = "https://api-auth.soundcloud.com";

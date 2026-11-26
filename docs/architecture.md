@@ -59,7 +59,7 @@ Declared in `plugin.json`:
 
 ## Host compatibility (`host.webFetch`)
 
-SoundCloud protects `api-v2.soundcloud.com` write mutations (`PUT`/`POST`/`DELETE`) with DataDome. This plugin routes non-GET API calls through the custom `host.webFetch` bridge in the adapted local MyGo Music build (not supported by official upstream MyGo Music), which executes requests inside a real WebView page on `https://soundcloud.com` and displays the verification window inside a same-origin iframe when SoundCloud requests a human check, hiding the window automatically once completed.
+SoundCloud protects `api-v2.soundcloud.com` write mutations (`PUT`/`POST`/`DELETE`) with DataDome. This plugin routes non-GET API calls through the custom `host.webFetch` bridge in [GooGuJiang/mygo-music](https://github.com/GooGuJiang/mygo-music) (not supported by official upstream MyGo Music), which executes requests inside a real WebView page on `https://soundcloud.com` and displays the verification window inside a same-origin iframe when SoundCloud requests a human check, hiding the window automatically once completed.
 
 ## Authentication and token refresh
 

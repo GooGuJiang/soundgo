@@ -76,7 +76,7 @@ export async function buildPlugin() {
     splitting: false,
     sourcemap: "none",
     banner:
-      "// SPDX-License-Identifier: AGPL-3.0-only\n// Copyright (C) 2026 SoundGo contributors\n",
+      "// SPDX-License-Identifier: AGPL-3.0-only\n// Copyright (C) 2026 SoundGo contributors\n// Modified fork of https://github.com/satyawikananda/soundgo (2026)\n// Corresponding Source: https://github.com/GooGuJiang/soundgo\n",
   });
 
   if (!result.success) {
