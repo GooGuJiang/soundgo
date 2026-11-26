@@ -3,12 +3,14 @@
 
 import { api, likedPlaylistIds, likedTrackIds, meNow } from "./api.js";
 import { PAGE } from "./constants.js";
-import { hasMore, playlistPage, toPlaylist, toTrack } from "./models.js";
+import { playlistPage, toPlaylist, toTrack } from "./models.js";
 import {
   hasSession,
+  likedCursor,
   likedPlaylistIdsCache,
   likedTrackIdsCache,
   requireToken,
+  setLikedCursor,
 } from "./session.js";
 import type { SCCollection, SCLikeItem, SCPlaylist } from "./soundcloud-types.js";
 import type {
@@ -79,19 +81,63 @@ export async function playlist({ id }: ByID): Promise<Playlist> {
 export async function liked({ offset = 0 }: PageOptions = {}): Promise<TrackPage> {
   requireToken();
   const me = await meNow();
-  const response = await api<SCCollection<SCLikeItem>>(
-    `/users/${me.id}/track_likes`,
-    {
-      query: { limit: PAGE, offset, linked_partitioning: 1 },
-    },
-  );
+
+  // SoundCloud's /users/:id/track_likes uses opaque timestamp cursors in
+  // next_href and rejects numeric offsets > 0 with 400 (ChronoParams.Cursor).
+  let response: SCCollection<SCLikeItem>;
+  if (offset <= 0) {
+    setLikedCursor(null);
+    response = await api<SCCollection<SCLikeItem>>(
+      `/users/${me.id}/track_likes`,
+      { query: { limit: PAGE, linked_partitioning: 1 } },
+    );
+  } else if (likedCursor && Math.abs(offset - likedCursor.at) <= 5) {
+    response = await api<SCCollection<SCLikeItem>>(likedCursor.href);
+  } else {
+    // Fallback when jumping to a non-sequential offset without a cached cursor:
+    // walk next_href from the start and slice the requested window.
+    const all: Track[] = [];
+    let nextPath = `/users/${me.id}/track_likes`;
+    let query: Record<string, string | number> | undefined = {
+      limit: 50,
+      linked_partitioning: 1,
+    };
+    for (let page = 0; page < 20 && nextPath && all.length < offset + PAGE; page++) {
+      const batch = await api<SCCollection<SCLikeItem>>(nextPath, { query });
+      for (const item of batch.collection || []) {
+        const mapped = toTrack(item.track);
+        if (mapped) all.push(mapped);
+      }
+      nextPath = batch.next_href || "";
+      query = undefined;
+    }
+    const tracks = all.slice(offset, offset + PAGE);
+    if (likedTrackIdsCache) {
+      for (const tr of tracks) likedTrackIdsCache.ids.add(tr.id);
+    }
+    if (nextPath && all.length >= offset + PAGE) {
+      setLikedCursor({ at: all.length, href: nextPath });
+    } else {
+      setLikedCursor(null);
+    }
+    return { tracks, more: all.length > offset + PAGE || !!nextPath };
+  }
+
   const tracks = (response.collection || [])
     .map((item) => toTrack(item.track))
     .filter((track): track is Track => track !== null);
   if (likedTrackIdsCache) {
     for (const tr of tracks) likedTrackIdsCache.ids.add(tr.id);
   }
-  return { tracks, more: hasMore(response, tracks.length) };
+
+  const nextHref = response.next_href || "";
+  if (nextHref) {
+    setLikedCursor({ at: offset + tracks.length, href: nextHref });
+  } else {
+    setLikedCursor(null);
+  }
+
+  return { tracks, more: !!nextHref };
 }
 
 export async function isLiked({

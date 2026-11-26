@@ -27,6 +27,11 @@ export interface TokenRefreshResult {
   error?: string;
 }
 
+export interface LikedCursor {
+  at: number;
+  href: string;
+}
+
 export let meCache: Account | null = null;
 export let sessionGen = 0;
 export let likedTrackIdsCache: TimedIdSetCache | null = null;
@@ -35,6 +40,7 @@ export let likedPlaylistIdsCache: TimedIdSetCache | null = null;
 export let likedPlaylistIdsPromise: Promise<Set<string>> | null = null;
 export let followingIdsCache: TimedIdSetCache | null = null;
 export let followingIdsPromise: Promise<Set<string>> | null = null;
+export let likedCursor: LikedCursor | null = null;
 
 let refreshPromise: Promise<string> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,6 +80,10 @@ export function setFollowingIdsPromise(
   followingIdsPromise = promise;
 }
 
+export function setLikedCursor(cursor: LikedCursor | null): void {
+  likedCursor = cursor;
+}
+
 export function bumpSessionGen(): number {
   sessionGen += 1;
   return sessionGen;
@@ -86,6 +96,7 @@ export function clearStateCaches(): void {
   likedPlaylistIdsPromise = null;
   followingIdsCache = null;
   followingIdsPromise = null;
+  likedCursor = null;
 }
 
 export function token(): string {
