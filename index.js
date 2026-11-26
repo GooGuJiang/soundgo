@@ -1536,7 +1536,7 @@ const lyricCache = new Map();
 
 async function lrclib(path) {
   const response = await request(LRCLIB + path, {
-    headers: { "user-agent": "mygo-soundcloud/0.1.0 (MyGo Music plugin)" },
+    headers: { "user-agent": "mygo-soundcloud/0.1.2 (MyGo Music plugin)" },
   });
   if (response.status === 404) return null;
   if (response.status !== 200) return null;
