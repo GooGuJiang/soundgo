@@ -1,5 +1,8 @@
 # SoundGo for MyGo Music
 
+> **Compatibility Notice / 兼容性说明:**  
+> This fork is adapted for a **custom local MyGo Music build** that exposes `host.webFetch` (browser-backed WebView requests with interactive verification for SoundCloud's DataDome-protected write endpoints). **It is NOT compatible with official upstream MyGo Music** for write actions (liking tracks/episodes, saving playlists/albums, following artists, editing playlists, and posting comments); read-only browsing, playback, viewing comments, and podcasts still work without `host.webFetch`.
+
 Plays SoundCloud in [MyGo Music](https://github.com/egoist/mygo-music), including the library of a personal account. It uses SoundCloud's private web API, is not affiliated with or endorsed by SoundCloud, and may stop working at any time.
 
 ## Install
@@ -43,7 +46,7 @@ SoundCloud has no lyrics. The plugin asks [LRCLIB](https://lrclib.net) by title,
 
 ## Privacy
 
-The plugin talks to `soundcloud.com`, `api-v2.soundcloud.com`, `api-auth.soundcloud.com`, `secure.soundcloud.com`, `*.sndcdn.com`, `*.soundcloud.cloud` and `lrclib.net`. It reads SoundCloud's public pages to find the current web client id, keeps that id, the session tokens, cached track metadata and the local listening history in its data folder, and sends nothing anywhere else.
+The plugin talks to `soundcloud.com`, `*.soundcloud.com`, `api-v2.soundcloud.com`, `api-auth.soundcloud.com`, `secure.soundcloud.com`, `*.sndcdn.com`, `*.soundcloud.cloud` and `lrclib.net`. It reads SoundCloud's public pages to find the current web client id, keeps that id, the session tokens, cached track metadata and the local listening history in its data folder, and sends nothing anywhere else.
 
 ## Credits
 

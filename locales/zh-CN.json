@@ -29,6 +29,8 @@
   "SoundCloud rejected the request": "SoundCloud 拒绝了这个请求",
   "SoundCloud has nothing at that address": "SoundCloud 上没有这个地址",
   "SoundCloud will not play this": "SoundCloud 不允许播放这个",
+  "SoundCloud blocked this action with a CAPTCHA check": "SoundCloud 触发了人机验证，无法从插件执行此操作",
+  "This action requires the adapted MyGo Music build with host.webFetch (not supported on official MyGo Music)": "此操作需要适配版的 MyGo Music（支持 host.webFetch），官方版本不支持",
   "SoundCloud did not allow this action": "SoundCloud 不允许执行此操作",
   "SoundCloud is rate limiting: try again later": "SoundCloud 正在限流，请稍后再试",
   "SoundCloud answered": "SoundCloud 返回了",

@@ -21,8 +21,10 @@ jobs:
       - name: Test Go HLS helper
         working-directory: helper
         run: go test -v ./...
-      - name: Test plugin JS
-        run: bun test
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck, build, and test plugin
+        run: bun run check
 
   build:
     needs: test
@@ -53,6 +55,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build TypeScript plugin bundle
+        run: bun run build
       - name: Build hls-helper (${{ matrix.goos }}-${{ matrix.goarch }})
         working-directory: helper
         env:
@@ -64,16 +71,18 @@ jobs:
           go build -trimpath -ldflags="-s -w" -o "../dist/stage/bin/hls-helper${{ matrix.ext }}" .
       - name: Package plugin ZIP
         run: |
-          cp plugin.json index.js LICENSE README.md dist/stage/
-          cp -r locales dist/stage/locales
+          cp -r dist/plugin/* dist/stage/
           if [ -z "${{ matrix.ext }}" ]; then
             chmod +x dist/stage/bin/hls-helper
           fi
           (cd dist/stage && zip -r "../soundgo-${{ matrix.goos }}-${{ matrix.goarch }}.zip" .)
+          (cd dist && sha256sum "soundgo-${{ matrix.goos }}-${{ matrix.goarch }}.zip" > "soundgo-${{ matrix.goos }}-${{ matrix.goarch }}.zip.sha256")
       - uses: actions/upload-artifact@v4
         with:
           name: soundgo-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/soundgo-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+          path: |
+            dist/soundgo-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+            dist/soundgo-${{ matrix.goos }}-${{ matrix.goarch }}.zip.sha256
 
   release:
     needs: build
@@ -84,6 +93,11 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Verify checksums
+        working-directory: artifacts
+        run: sha256sum --check ./*.sha256
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.zip
+          files: |
+            artifacts/*.zip
+            artifacts/*.sha256

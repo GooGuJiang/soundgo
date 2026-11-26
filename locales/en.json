@@ -29,6 +29,8 @@
   "SoundCloud rejected the request": "SoundCloud rejected the request",
   "SoundCloud has nothing at that address": "SoundCloud has nothing at that address",
   "SoundCloud will not play this": "SoundCloud will not play this",
+  "SoundCloud blocked this action with a CAPTCHA check": "SoundCloud blocked this action with a CAPTCHA check",
+  "This action requires the adapted MyGo Music build with host.webFetch (not supported on official MyGo Music)": "This action requires the adapted MyGo Music build with host.webFetch (not supported on official MyGo Music)",
   "SoundCloud did not allow this action": "SoundCloud did not allow this action",
   "SoundCloud is rate limiting: try again later": "SoundCloud is rate limiting: try again later",
   "SoundCloud answered": "SoundCloud answered",

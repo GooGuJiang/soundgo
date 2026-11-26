@@ -26,15 +26,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	helperVersion = "1.0.0"
+	helperVersion = "1.1.0"
 	defaultUA     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 	streamTTL     = 15 * time.Minute
+	idleTimeout   = 2 * time.Minute
 	maxStreams    = 32
 	maxSegBytes   = 32 << 20
 	prefetchAhead = 2
@@ -72,9 +75,11 @@ type registeredStream struct {
 }
 
 type server struct {
-	client  *http.Client
-	mu      sync.Mutex
-	streams map[string]*registeredStream
+	client       *http.Client
+	mu           sync.Mutex
+	streams      map[string]*registeredStream
+	activeCount  atomic.Int64
+	lastActivity atomic.Int64
 }
 
 func newServer(client *http.Client) *server {
@@ -86,17 +91,53 @@ func newServer(client *http.Client) *server {
 			Timeout:   30 * time.Second,
 		}
 	}
-	return &server{
+	s := &server{
 		client:  client,
 		streams: make(map[string]*registeredStream),
 	}
+	s.touch()
+	return s
+}
+
+func (s *server) touch() {
+	s.lastActivity.Store(time.Now().UnixNano())
+}
+
+func parseFlags(args []string) (worker bool, ppid int) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--worker":
+			worker = true
+		case "--ppid":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					ppid = v
+				}
+				i++
+			}
+		}
+	}
+	return worker, ppid
 }
 
 func main() {
+	// Release any working-directory handle on the plugin folder immediately.
+	_ = os.Chdir(os.TempDir())
+
 	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version") {
 		fmt.Printf("soundgo-hls-helper %s\n", helperVersion)
 		return
 	}
+
+	if handled, err := maybeRunWindowsTrampoline(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "trampoline failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	worker, ppid := parseFlags(os.Args[1:])
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -109,6 +150,7 @@ func main() {
 	mux.HandleFunc("/register", s.handleRegister)
 	mux.HandleFunc("/stream/", s.handleStream)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		s.touch()
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -117,12 +159,40 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Exit cleanly when the parent plugin closes stdin or exits.
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(ctx)
+		})
+	}
+
+	if worker && ppid > 0 {
+		// Detached Windows worker: exit as soon as MyGo Music exits.
+		watchParentExit(ppid, shutdown)
+	} else {
+		// Direct mode: exit cleanly when the parent plugin closes stdin or exits.
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			shutdown()
+		}()
+	}
+
+	// Exit cleanly after prolonged inactivity with no active streams.
 	go func() {
-		_, _ = io.Copy(io.Discard, os.Stdin)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(ctx)
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if s.activeCount.Load() > 0 {
+				continue
+			}
+			idle := time.Since(time.Unix(0, s.lastActivity.Load()))
+			if idle >= idleTimeout {
+				shutdown()
+				return
+			}
+		}
 	}()
 
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -147,6 +217,7 @@ type registerResponse struct {
 }
 
 func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	s.touch()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -213,6 +284,12 @@ func (s *server) getStream(id string) *registeredStream {
 }
 
 func (s *server) handleStream(w http.ResponseWriter, r *http.Request) {
+	s.activeCount.Add(1)
+	s.touch()
+	defer func() {
+		s.activeCount.Add(-1)
+		s.touch()
+	}()
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
